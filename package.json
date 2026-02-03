@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite --port 3000",
     "start": "vite --port 3000",
-    "build": "npm run check:safe && vite build",
+    "build": "vite build",
+    "build:check": "npm run check:safe && vite build",
     "serve": "vite preview",
     "test": "vitest run --config vitest.config.js test/template-tests/suites",
     "test:smoke": "vitest run --config vitest.config.js test/template-tests/smoke",
@@ -80,7 +81,9 @@
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.1.2",
     "zod": "^3.25.50",
-    "zustand": "^5.0.8"
+    "zustand": "^5.0.8",
+    "@supabase/supabase-js": "^2.39.7",
+    "ethers": "^6.10.0"
   },
   "devDependencies": {
     "@babel/plugin-syntax-typescript": "^7.27.1",

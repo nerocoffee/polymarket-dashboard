@@ -5,8 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Play, Square, TrendingUp, Activity, DollarSign, Settings } from "lucide-react";
+import { Play, Square, TrendingUp, Activity, DollarSign, Settings, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabase";
+import { connectWallet, getBalance, isWalletConnected, onAccountsChanged } from "@/lib/blockchain";
 
 type Market = {
 	id: string;
@@ -42,11 +44,13 @@ export function PolymarketDashboard() {
 		marketsScanned: 0,
 	});
 	const [arbThreshold, setArbThreshold] = useState(0.98);
+	const [walletAddress, setWalletAddress] = useState<string | null>(null);
+	const [walletBalance, setWalletBalance] = useState<string>("0");
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const eventSourceRef = useRef<EventSource | null>(null);
 
 	// Add log entry
-	const addLog = (type: LogEntry["type"], message: string) => {
+	const addLog = async (type: LogEntry["type"], message: string) => {
 		const newLog: LogEntry = {
 			id: Math.random().toString(36),
 			timestamp: new Date(),
@@ -54,7 +58,80 @@ export function PolymarketDashboard() {
 			message,
 		};
 		setLogs((prev) => [newLog, ...prev].slice(0, 100));
+
+		// Save to Supabase
+		try {
+			await supabase.from('bot_logs').insert({
+				type,
+				message,
+				timestamp: new Date().toISOString(),
+			});
+		} catch (error) {
+			console.error('Error saving log to Supabase:', error);
+		}
 	};
+
+	// Check wallet connection on mount
+	useEffect(() => {
+		const checkWallet = async () => {
+			const connected = await isWalletConnected();
+			if (connected && typeof window !== 'undefined' && window.ethereum) {
+				const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+				if (accounts.length > 0) {
+					setWalletAddress(accounts[0]);
+					const balance = await getBalance(accounts[0]);
+					setWalletBalance(balance);
+				}
+			}
+		};
+		checkWallet();
+
+		// Listen for account changes
+		onAccountsChanged(async (accounts: string[]) => {
+			if (accounts.length > 0) {
+				setWalletAddress(accounts[0]);
+				const balance = await getBalance(accounts[0]);
+				setWalletBalance(balance);
+			} else {
+				setWalletAddress(null);
+				setWalletBalance("0");
+			}
+		});
+	}, []);
+
+	// Handle wallet connection
+	const handleConnectWallet = async () => {
+		const address = await connectWallet();
+		if (address) {
+			setWalletAddress(address);
+			const balance = await getBalance(address);
+			setWalletBalance(balance);
+			addLog("INFO", `Wallet connected: ${address.slice(0, 6)}...${address.slice(-4)}`);
+		}
+	};
+
+	// Load stats from Supabase on mount
+	useEffect(() => {
+		const loadStats = async () => {
+			try {
+				const { data: trades } = await supabase
+					.from('trades')
+					.select('profit');
+
+				if (trades) {
+					const totalProfit = trades.reduce((sum, trade) => sum + (trade.profit || 0), 0);
+					setStats(prev => ({
+						...prev,
+						totalProfit,
+						tradesExecuted: trades.length,
+					}));
+				}
+			} catch (error) {
+				console.error('Error loading stats from Supabase:', error);
+			}
+		};
+		loadStats();
+	}, []);
 
 	// Simulate market data updates
 	useEffect(() => {
@@ -91,13 +168,27 @@ export function PolymarketDashboard() {
 
 					// Simulate trade execution
 					const profit = (1 - opp.sum) * 100;
-					setTimeout(() => {
+					setTimeout(async () => {
 						addLog("TRADE_EXECUTED", `Executed arbitrage on ${opp.name}. Profit: $${profit.toFixed(2)}`);
 						setStats((prev) => ({
 							...prev,
 							tradesExecuted: prev.tradesExecuted + 1,
 							totalProfit: prev.totalProfit + profit,
 						}));
+
+						// Save trade to Supabase
+						try {
+							await supabase.from('trades').insert({
+								market_id: opp.id,
+								type: 'TRADE_EXECUTED',
+								profit,
+								yes_price: opp.yesPrice,
+								no_price: opp.noPrice,
+								sum: opp.sum,
+							});
+						} catch (error) {
+							console.error('Error saving trade to Supabase:', error);
+						}
 					}, 500);
 				});
 			} else {
@@ -149,9 +240,35 @@ export function PolymarketDashboard() {
 				<div className="flex items-center justify-between">
 					<div>
 						<h1 className="text-3xl font-bold text-white">Polymarket Arbitrage Bot</h1>
-						<p className="text-slate-400 mt-1">Real-time monitoring and automated trading</p>
+						<p className="text-slate-400 mt-1">Real-time monitoring and automated trading on Polygon</p>
 					</div>
 					<div className="flex items-center gap-4">
+						{walletAddress ? (
+							<div className="flex items-center gap-3 bg-slate-900/50 border border-slate-800 px-4 py-2 rounded-lg">
+								<Wallet className="size-4 text-green-400" />
+								<div className="flex flex-col">
+									<span className="text-xs text-slate-400">Connected</span>
+									<span className="text-sm text-white font-mono">
+										{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
+									</span>
+								</div>
+								<div className="flex flex-col border-l border-slate-700 pl-3">
+									<span className="text-xs text-slate-400">Balance</span>
+									<span className="text-sm text-green-400 font-mono">
+										{parseFloat(walletBalance).toFixed(4)} MATIC
+									</span>
+								</div>
+							</div>
+						) : (
+							<Button
+								variant="outline"
+								onClick={handleConnectWallet}
+								className="border-slate-700 hover:bg-slate-800"
+							>
+								<Wallet className="mr-2 size-4" />
+								Connect Wallet
+							</Button>
+						)}
 						<Badge variant={botRunning ? "default" : "outline"} className={cn(
 							"text-sm px-4 py-2",
 							botRunning && "bg-green-600 hover:bg-green-600 animate-pulse"
